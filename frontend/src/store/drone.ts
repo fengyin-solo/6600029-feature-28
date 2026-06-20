@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { Waypoint, NoFlyZone, TerrainPoint, FlightPlan, DroneConfig } from '../types';
 import {
   aStarPathfind,
@@ -14,6 +14,7 @@ import {
 
 export const useDroneStore = defineStore('drone', () => {
   const waypoints = ref<Waypoint[]>([]);
+  const selectedWaypointIds = ref<Set<string>>(new Set());
   const noFlyZones = ref<NoFlyZone[]>([]);
   const terrainData = ref<TerrainPoint[]>([]);
   const currentPlan = ref<FlightPlan | null>(null);
@@ -49,6 +50,73 @@ export const useDroneStore = defineStore('drone', () => {
   function updateWaypoint(id: string, updates: Partial<Waypoint>) {
     const wp = waypoints.value.find((w) => w.id === id);
     if (wp) Object.assign(wp, updates);
+    if (waypoints.value.length >= 2) updatePlan();
+  }
+
+  function updateWaypointsBatch(updates: { id: string; changes: Partial<Waypoint> }[]) {
+    for (const u of updates) {
+      const wp = waypoints.value.find((w) => w.id === u.id);
+      if (wp) Object.assign(wp, u.changes);
+    }
+    if (waypoints.value.length >= 2) updatePlan();
+  }
+
+  function isWaypointSelected(id: string): boolean {
+    return selectedWaypointIds.value.has(id);
+  }
+
+  function toggleWaypointSelection(id: string, additive = false) {
+    if (!additive) {
+      if (selectedWaypointIds.value.size === 1 && selectedWaypointIds.value.has(id)) {
+        selectedWaypointIds.value = new Set();
+      } else {
+        selectedWaypointIds.value = new Set([id]);
+      }
+    } else {
+      const next = new Set(selectedWaypointIds.value);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      selectedWaypointIds.value = next;
+    }
+  }
+
+  function clearWaypointSelection() {
+    selectedWaypointIds.value = new Set();
+  }
+
+  function selectWaypointsInBox(
+    southWest: [number, number],
+    northEast: [number, number],
+    additive = false
+  ) {
+    const [minLat, minLng] = southWest;
+    const [maxLat, maxLng] = northEast;
+    const next = additive ? new Set(selectedWaypointIds.value) : new Set<string>();
+    for (const wp of waypoints.value) {
+      if (
+        wp.lat >= Math.min(minLat, maxLat) &&
+        wp.lat <= Math.max(minLat, maxLat) &&
+        wp.lng >= Math.min(minLng, maxLng) &&
+        wp.lng <= Math.max(minLng, maxLng)
+      ) {
+        next.add(wp.id);
+      }
+    }
+    selectedWaypointIds.value = next;
+  }
+
+  function moveSelectedWaypoints(deltaLat: number, deltaLng: number) {
+    if (selectedWaypointIds.value.size === 0) return;
+    const updates: { id: string; changes: Partial<Waypoint> }[] = [];
+    for (const wp of waypoints.value) {
+      if (selectedWaypointIds.value.has(wp.id)) {
+        updates.push({ id: wp.id, changes: { lat: wp.lat + deltaLat, lng: wp.lng + deltaLng } });
+      }
+    }
+    updateWaypointsBatch(updates);
+  }
+
+  function getSelectedWaypointCount(): number {
+    return selectedWaypointIds.value.size;
   }
 
   function planRoute(start: [number, number], goal: [number, number]) {
@@ -108,6 +176,14 @@ export const useDroneStore = defineStore('drone', () => {
     return exportKML(currentPlan.value);
   }
 
+  watch(
+    () => waypoints.value.length,
+    () => {
+      clearWaypointSelection();
+      if (waypoints.value.length >= 2) updatePlan();
+    }
+  );
+
   // ─── Computed ─────────────────────────────────────────────────────────────
   const totalDistance = computed(() => {
     if (!currentPlan.value) return 0;
@@ -148,6 +224,7 @@ export const useDroneStore = defineStore('drone', () => {
 
   return {
     waypoints,
+    selectedWaypointIds,
     noFlyZones,
     terrainData,
     currentPlan,
@@ -163,6 +240,13 @@ export const useDroneStore = defineStore('drone', () => {
     addWaypoint,
     removeWaypoint,
     updateWaypoint,
+    updateWaypointsBatch,
+    isWaypointSelected,
+    toggleWaypointSelection,
+    clearWaypointSelection,
+    selectWaypointsInBox,
+    moveSelectedWaypoints,
+    getSelectedWaypointCount,
     planRoute,
     clearRoute,
     simulateFlight,
